@@ -52,7 +52,7 @@ The load-bearing idea: **claimed evidence and verified evidence are separately s
 ## Quickstart
 
 ```bash
-git clone https://github.com/smallbussinessrisk/attestor
+git clone https://github.com/smallbusinessrisk/attestor
 cd attestor
 pip install -e .
 
