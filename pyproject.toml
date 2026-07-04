@@ -25,6 +25,11 @@ attestor = "attestor.cli:main"
 [project.optional-dependencies]
 dev = ["pytest>=7"]
 
+[tool.pytest.ini_options]
+# Add the workspace root (parent of this repo) so that `attestor` resolves as a
+# namespace package and attestor.core.* / attestor.adapters.* are importable.
+pythonpath = [".."]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["attestor*"]
