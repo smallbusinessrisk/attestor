@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "task_type": "deploy",
+  "description": "Verifies a deployment task completed successfully",
+  "verification_targets": {
+    "files_created": [],
+    "endpoints_verified": [
+      {
+        "url": "https://api.example.com/health",
+        "expected_status": 200,
+        "description": "Production health check passes after deploy"
+      },
+      {
+        "url": "https://api.example.com/version",
+        "expected_status": 200,
+        "description": "Version endpoint returns 200"
+      }
+    ],
+    "db_changes": [
+      {
+        "db_path": "/var/db/app.sqlite",
+        "table": "deployments",
+        "min_rows": 1,
+        "description": "Deployment record written to DB"
+      }
+    ],
+    "command_checks": [],
+    "git_commits": [
+      {
+        "repo_path": "/srv/app",
+        "commit_hash": "<sha-of-deployed-commit>",
+        "description": "Deployed commit exists in production repo history"
+      }
+    ],
+    "requires_human_review": []
+  }
+}

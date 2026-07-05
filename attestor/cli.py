@@ -4,10 +4,14 @@ attestor.cli
 Command-line interface for the Attestor accountability layer.
 
 Usage:
-    attestor run        -- run the checker against the ledger DB
-    attestor status     -- list commitments
-    attestor watchdog   -- check the validator heartbeat
-    attestor demo       -- run the fabrication demo
+    attestor run            -- run the checker against the ledger DB
+    attestor status         -- list commitments
+    attestor watchdog       -- check the validator heartbeat
+    attestor review list    -- list pending human review items
+    attestor review approve <id> --reviewer <name>
+    attestor review reject  <id> --reviewer <name>
+    attestor report         -- print shadow mode discrepancy report
+    attestor demo           -- run the fabrication demo
 
 All commands accept --db (path to the ledger SQLite file) and --token
 (verifier token; also reads ATTESTOR_VERIFIER_TOKEN env var).
@@ -147,6 +151,109 @@ def cmd_watchdog(args):
         sys.exit(1)
 
 
+# ─── review sub-commands ──────────────────────────────────────────────────────
+
+def cmd_review_list(args):
+    """List all pending human review items."""
+    from attestor.adapters.store.sqlite import SQLiteLedger
+    from attestor.core.queue import HumanCheckerQueue
+
+    ledger = SQLiteLedger(args.db)
+    q = HumanCheckerQueue(ledger)
+    items = q.list_pending()
+
+    if not items:
+        print(f"No pending human review items in {args.db}.")
+        return
+
+    print(f"\nPending Human Review Items  [{args.db}]")
+    print(f"\n  {'ID':<10} {'COMMITMENT':<10} {'DESCRIPTION':<30} AGENT OUTPUT")
+    print("  " + "─" * 80)
+    for item in items:
+        desc = item.claim_description[:28]
+        output = item.agent_output[:32] if item.agent_output else ""
+        print(
+            f"  {item.id[:8]:<10} {item.commitment_id[:8]:<10}"
+            f" {desc:<30} {output}"
+        )
+    print(f"\n  Total: {len(items)}")
+
+
+def cmd_review_approve(args):
+    """Approve a pending human review item."""
+    from attestor.adapters.store.sqlite import SQLiteLedger
+    from attestor.core.queue import HumanCheckerQueue
+
+    ledger = SQLiteLedger(args.db)
+    q = HumanCheckerQueue(ledger)
+    try:
+        item = q.resolve(args.item_id, approved=True, reviewed_by=args.reviewer)
+        print(f"Approved: {item.id[:8]}...  (reviewed by {item.reviewed_by})")
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_review_reject(args):
+    """Reject a pending human review item."""
+    from attestor.adapters.store.sqlite import SQLiteLedger
+    from attestor.core.queue import HumanCheckerQueue
+
+    ledger = SQLiteLedger(args.db)
+    q = HumanCheckerQueue(ledger)
+    try:
+        item = q.resolve(args.item_id, approved=False, reviewed_by=args.reviewer)
+        print(f"Rejected: {item.id[:8]}...  (reviewed by {item.reviewed_by})")
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_review(args):
+    """Dispatch to review sub-commands."""
+    args.review_func(args)
+
+
+# ─── report command ───────────────────────────────────────────────────────────
+
+def cmd_report(args):
+    """Print the shadow mode discrepancy report from shadow_log."""
+    from attestor.adapters.store.sqlite import SQLiteLedger
+    from attestor.core.shadow import ShadowLogger
+
+    ledger = SQLiteLedger(args.db)
+    shadow = ShadowLogger(ledger)
+    summary = shadow.summary()
+
+    total = summary["total_measured"]
+    passed = summary["would_have_passed"]
+    failed = summary["would_have_failed"]
+
+    print(f"\nShadow Mode Report  [{args.db}]")
+
+    if total == 0:
+        print("  No shadow log entries found. Run with shadow_mode=True first.")
+        return
+
+    pct_pass = passed / total * 100
+    pct_fail = failed / total * 100
+
+    print(f"{'Total measured:':<28} {total}")
+    print(f"{'Would have passed:':<28} {passed}  ({pct_pass:.1f}%)")
+    print(f"{'Would have failed:':<28} {failed}  ({pct_fail:.1f}%)")
+
+    if summary["by_kind"]:
+        print("\nBy check type:")
+        for kind, stats in summary["by_kind"].items():
+            m = stats["measured"]
+            f = stats["would_have_failed"]
+            print(f"  {kind:<16} {m} measured,  {f} would have failed")
+
+    print()
+
+
+# ─── demo ────────────────────────────────────────────────────────────────────
+
 def cmd_demo(args):
     """Run the fabrication demo end-to-end."""
     demo_path = (
@@ -230,6 +337,40 @@ def main():
         help="Max acceptable age in minutes (default: 60)",
     )
     wd_p.set_defaults(func=cmd_watchdog)
+
+    # ── review ──
+    review_p = subparsers.add_parser(
+        "review", help="Manage human review queue for non-binary claims"
+    )
+    review_p.set_defaults(func=cmd_review)
+    review_sub = review_p.add_subparsers(dest="review_command", metavar="ACTION")
+    review_sub.required = True
+
+    # review list
+    rl_p = review_sub.add_parser("list", help="List pending human review items")
+    rl_p.set_defaults(review_func=cmd_review_list)
+
+    # review approve
+    ra_p = review_sub.add_parser("approve", help="Approve a pending review item")
+    ra_p.add_argument("item_id", help="Review item ID (full or prefix)")
+    ra_p.add_argument(
+        "--reviewer", required=True, help="Name of the human reviewer"
+    )
+    ra_p.set_defaults(review_func=cmd_review_approve)
+
+    # review reject
+    rr_p = review_sub.add_parser("reject", help="Reject a pending review item")
+    rr_p.add_argument("item_id", help="Review item ID (full or prefix)")
+    rr_p.add_argument(
+        "--reviewer", required=True, help="Name of the human reviewer"
+    )
+    rr_p.set_defaults(review_func=cmd_review_reject)
+
+    # ── report ──
+    report_p = subparsers.add_parser(
+        "report", help="Print shadow mode discrepancy report"
+    )
+    report_p.set_defaults(func=cmd_report)
 
     # ── demo ──
     demo_p = subparsers.add_parser(

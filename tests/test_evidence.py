@@ -1,7 +1,8 @@
 """
-Tests for check adapters — file_check, http_check, db_check, command_check.
+Tests for check adapters — file_check, http_check, db_check, command_check, git_check.
 
 All tests use tempfile and unittest.mock — zero external dependencies.
+The git_check tests create a minimal in-memory git repo via subprocess.
 """
 import os
 import sqlite3
@@ -11,7 +12,7 @@ import urllib.error
 from unittest.mock import patch, MagicMock
 
 from attestor.core.evidence import EvidenceClaim
-from attestor.adapters.checks import file_check, http_check, db_check, command_check
+from attestor.adapters.checks import file_check, http_check, db_check, command_check, git_check
 
 
 # ─── file_check ───────────────────────────────────────────────────────────────
@@ -348,3 +349,132 @@ class TestCommandCheck:
         )
         result = command_check.check(claim)
         assert result.passed is True
+
+
+# ─── git_check ────────────────────────────────────────────────────────────────
+
+class TestGitCheck:
+    """
+    Tests for git_check adapter.
+
+    Creates a real minimal git repo via subprocess for round-trip tests;
+    uses synthetic paths for error-path tests to keep them hermetic.
+    """
+
+    def _make_git_repo(self, tmp_path) -> str:
+        """
+        Create a minimal git repo under tmp_path with one commit.
+        Returns the full SHA-1 of HEAD.
+        """
+        import subprocess
+        repo = str(tmp_path)
+        subprocess.run(["git", "init", repo], capture_output=True, check=True)
+        subprocess.run(["git", "-C", repo, "config", "user.email", "test@attestor.dev"],
+                       capture_output=True, check=True)
+        subprocess.run(["git", "-C", repo, "config", "user.name", "Attestor Test"],
+                       capture_output=True, check=True)
+        (tmp_path / "sentinel.txt").write_text("attestor")
+        subprocess.run(["git", "-C", repo, "add", "."], capture_output=True, check=True)
+        subprocess.run(["git", "-C", repo, "commit", "-m", "initial"],
+                       capture_output=True, check=True)
+        result = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        )
+        return result.stdout.strip()
+
+    def test_valid_commit_passes(self, tmp_path):
+        """A real commit hash in a real repo should pass."""
+        commit_hash = self._make_git_repo(tmp_path)
+        claim = EvidenceClaim(
+            kind="git_commit",
+            description="HEAD commit exists",
+            repo_path=str(tmp_path),
+            commit_hash=commit_hash,
+        )
+        result = git_check.check(claim)
+        assert result.passed is True
+        assert "commit" in result.measured.lower()
+
+    def test_short_hash_passes(self, tmp_path):
+        """A 7-char short hash should also resolve correctly."""
+        commit_hash = self._make_git_repo(tmp_path)
+        short = commit_hash[:7]
+        claim = EvidenceClaim(
+            kind="git_commit",
+            description="short hash resolves",
+            repo_path=str(tmp_path),
+            commit_hash=short,
+        )
+        result = git_check.check(claim)
+        assert result.passed is True
+
+    def test_nonexistent_hash_fails(self, tmp_path):
+        """A hash that does not exist in the repo should fail."""
+        self._make_git_repo(tmp_path)
+        claim = EvidenceClaim(
+            kind="git_commit",
+            description="nonexistent hash",
+            repo_path=str(tmp_path),
+            commit_hash="aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111",
+        )
+        result = git_check.check(claim)
+        assert result.passed is False
+        assert "not found" in result.measured.lower() or "commit" in result.measured.lower()
+
+    def test_invalid_repo_path_fails(self):
+        """A path that is not a git repo should fail."""
+        claim = EvidenceClaim(
+            kind="git_commit",
+            description="bad repo path",
+            repo_path="/tmp/definitely_not_a_git_repo_xyz_attestor",
+            commit_hash="abc1234",
+        )
+        result = git_check.check(claim)
+        assert result.passed is False
+
+    def test_invalid_hash_format_fails(self, tmp_path):
+        """A hash with non-hex characters should fail before calling git."""
+        self._make_git_repo(tmp_path)
+        claim = EvidenceClaim(
+            kind="git_commit",
+            description="invalid hash format",
+            repo_path=str(tmp_path),
+            commit_hash="not-a-valid-hash!",
+        )
+        result = git_check.check(claim)
+        assert result.passed is False
+        assert "invalid" in result.measured.lower() or "format" in result.measured.lower()
+
+    def test_missing_repo_path_fails(self):
+        """No repo_path should fail gracefully."""
+        claim = EvidenceClaim(
+            kind="git_commit",
+            description="no repo path",
+            commit_hash="abc1234",
+        )
+        result = git_check.check(claim)
+        assert result.passed is False
+
+    def test_missing_commit_hash_fails(self, tmp_path):
+        """No commit_hash should fail gracefully."""
+        self._make_git_repo(tmp_path)
+        claim = EvidenceClaim(
+            kind="git_commit",
+            description="no commit hash",
+            repo_path=str(tmp_path),
+        )
+        result = git_check.check(claim)
+        assert result.passed is False
+
+    def test_result_contains_claim(self, tmp_path):
+        """EvidenceResult.claim must reference the original EvidenceClaim."""
+        self._make_git_repo(tmp_path)
+        claim = EvidenceClaim(
+            kind="git_commit",
+            description="claim ref preserved",
+            repo_path=str(tmp_path),
+            commit_hash="deadbeef",
+        )
+        result = git_check.check(claim)
+        assert result.claim is claim

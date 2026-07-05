@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "task_type": "build",
+  "description": "Verifies a software build task completed successfully",
+  "verification_targets": {
+    "files_created": [
+      {
+        "path": "/path/to/output/file",
+        "min_bytes": 1000,
+        "description": "Build output file"
+      }
+    ],
+    "endpoints_verified": [
+      {
+        "url": "http://localhost:8080/health",
+        "expected_status": 200,
+        "description": "Health check passes"
+      }
+    ],
+    "db_changes": [],
+    "command_checks": [
+      {
+        "command": "python3 -m pytest tests/ -q",
+        "expected_exit_code": 0,
+        "description": "All tests pass"
+      }
+    ],
+    "git_commits": [],
+    "requires_human_review": []
+  }
+}

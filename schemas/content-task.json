@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "task_type": "content",
+  "description": "Verifies a content creation task completed and meets quality standards",
+  "verification_targets": {
+    "files_created": [
+      {
+        "path": "/content/output/article.md",
+        "min_bytes": 2000,
+        "description": "Article file created with substantive content (>= 2 KB)"
+      },
+      {
+        "path": "/content/output/thumbnail.png",
+        "min_bytes": 10000,
+        "description": "Thumbnail image created and non-trivial size"
+      }
+    ],
+    "endpoints_verified": [],
+    "db_changes": [
+      {
+        "db_path": "/var/db/content.sqlite",
+        "table": "articles",
+        "min_rows": 1,
+        "description": "Article record saved to content database"
+      }
+    ],
+    "command_checks": [],
+    "git_commits": [],
+    "requires_human_review": [
+      {
+        "description": "Editorial quality check — human reviews article for accuracy and tone",
+        "agent_output": "<agent pastes article summary or URL here for reviewer context>",
+        "reviewer_instructions": "Confirm the article is factually accurate, appropriately toned, and meets brand guidelines. Approve or reject below."
+      }
+    ]
+  }
+}

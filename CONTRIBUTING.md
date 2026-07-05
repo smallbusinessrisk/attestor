@@ -148,6 +148,74 @@ Built-in notifiers: `adapters/notifier/stdout.py` (default),
 
 ---
 
+---
+
+## Using the human review queue
+
+For claims that can't be mechanically verified (content quality, UI review,
+business sign-off), set `requires_human_review=True` on the `EvidenceClaim`:
+
+```python
+from attestor import EvidenceClaim, HumanCheckerQueue, CheckerAPI, SQLiteLedger
+
+ledger = SQLiteLedger("attestor.db")
+queue  = HumanCheckerQueue(ledger)
+
+# Maker submits a claim for human review
+claim = EvidenceClaim(
+    kind="human_review",
+    description="Editorial quality check",
+    requires_human_review=True,
+    agent_output="The article draft is at /content/article.md",
+)
+
+# CheckerAPI automatically routes it to the queue
+checker = CheckerAPI(ledger=ledger, verifier_id="validator",
+                     token=token, queue=queue)
+checker.run()  # claim enqueued, commitment left in_progress
+```
+
+Review and resolve via CLI:
+
+```bash
+attestor review list                               # see pending items
+attestor review approve <item_id> --reviewer alice  # approve
+attestor review reject  <item_id> --reviewer bob    # reject
+```
+
+---
+
+## Using shadow mode
+
+Shadow mode lets you measure discrepancy rates without blocking any agent work.
+Deploy with shadow mode first, tune until failure rate is acceptable, then
+switch to enforcement mode.
+
+```python
+checker = CheckerAPI(
+    ledger=ledger, verifier_id="validator", token=token,
+    shadow_mode=True,   # ← measure without blocking
+)
+checker.run()
+
+# View results:
+# attestor report --db attestor.db
+```
+
+Shadow log entries are written to the `shadow_log` table. The `ShadowLogger`
+class can be used independently:
+
+```python
+from attestor import ShadowLogger, SQLiteLedger
+
+ledger = SQLiteLedger("attestor.db")
+shadow = ShadowLogger(ledger)
+summary = shadow.summary()
+print(f"Discrepancy rate: {summary['discrepancy_rate']:.1%}")
+```
+
+---
+
 ## Principles to keep
 
 - **Zero runtime dependencies.** Core and CLI use stdlib only. Keep it that way.
@@ -157,3 +225,7 @@ Built-in notifiers: `adapters/notifier/stdout.py` (default),
   `ATTESTOR_VERIFIER_TOKEN` in the environment. Never put the token in maker
   agent context. Tests verify this can't be bypassed.
 - **No commitment = no work started.** The first action is always `maker.commit()`.
+- **Human review is still tracked.** Non-binary claims go into the queue, not
+  into a black hole. Pending reviews block completion just like mechanical failures.
+- **Shadow mode before enforcement.** Always baseline your discrepancy rate before
+  enabling hard blocking. See `attestor report` for the readout.

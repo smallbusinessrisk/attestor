@@ -1,20 +1,25 @@
 """
 attestor.core.evidence
 ----------------------
-The evidence contract.
+Evidence contract.
 
-Evidence is not free-form text. It is a structured claim that the independent
-validator can re-measure. Claimed evidence and verified evidence are separately
-sourced — only the validator's independent measurement counts.
-
-A fabricating agent can paste a plausible '200 OK' as easily as it can fabricate
-the work. So the validator never reads the agent's transcript. It measures the world.
+Evidence is not free-form text. Each claim is a structured, independently
+verifiable statement. Only the validator's independent measurement counts —
+fabricating '200 OK' is easy, so the validator never reads the maker's
+transcript. It measures the world directly.
 """
 from dataclasses import dataclass
 from typing import Optional, Literal
 
-
-EvidenceKind = Literal["file_exists", "http_status", "row_count", "command_exit", "custom"]
+EvidenceKind = Literal[
+    "file_exists",
+    "http_status",
+    "row_count",
+    "command_exit",
+    "git_commit",
+    "human_review",
+    "custom",
+]
 
 
 @dataclass
@@ -22,11 +27,11 @@ class EvidenceClaim:
     """
     A single verifiable claim submitted by the maker as evidence of completion.
 
-    The validator re-measures this independently. If the measured result matches
-    the claimed result, the commitment passes. If not, VALIDATOR FAIL is written.
+    The validator re-measures independently. If the measured result matches the
+    claimed result, the commitment passes. If not, VALIDATOR FAIL is written.
     """
     kind: EvidenceKind
-    description: str            # Human-readable label
+    description: str                  # Human-readable label
 
     # file_exists
     path: Optional[str] = None
@@ -40,14 +45,22 @@ class EvidenceClaim:
     db_path: Optional[str] = None
     table: Optional[str] = None
     min_rows: Optional[int] = None
-    query: Optional[str] = None     # Override: custom SQL returning a count
+    query: Optional[str] = None       # Override: custom SQL returning count
 
     # command_exit
     command: Optional[str] = None
     expected_exit: Optional[int] = None   # default 0
 
+    # git_commit
+    repo_path: Optional[str] = None
+    commit_hash: Optional[str] = None
+
     # custom
-    custom_fn: Optional[str] = None       # dotted import path to a callable
+    custom_fn: Optional[str] = None   # dotted path to callable
+
+    # human_review — non-binary claims that require human judgment
+    requires_human_review: bool = False
+    agent_output: str = ""            # What the agent submitted for this claim
 
 
 @dataclass
@@ -56,12 +69,12 @@ class EvidenceResult:
     claim: EvidenceClaim
     passed: bool
     measured: str       # What the validator actually observed
-    expected: str       # What the maker claimed
+    expected: str       # What the claim required
     detail: Optional[str] = None
 
 
-def format_fail(results: list[EvidenceResult]) -> str:
-    """Format a VALIDATOR FAIL message from failed evidence results."""
+def format_fail(results: list) -> str:
+    """Format a VALIDATOR FAIL message for failed evidence results."""
     lines = ["VALIDATOR FAIL:"]
     for r in results:
         if not r.passed:

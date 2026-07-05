@@ -13,6 +13,10 @@ present in the maker's environment.
 
 SoD: the checker has write access to close/fail commitments.
      the maker does not.
+
+Shadow mode: pass shadow_mode=True to measure without enforcing. All results
+are recorded to shadow_log but no commitment is failed or completed. Use this
+to baseline your discrepancy rate before enabling enforcement.
 """
 import os
 from typing import Optional
@@ -38,15 +42,36 @@ class CheckerAPI:
                              verifier_id="validator-process",
                              token=os.environ["ATTESTOR_VERIFIER_TOKEN"])
         checker.run()  # Picks up pending commitments, re-measures, closes or fails
+
+    Shadow mode (measure without enforcing):
+        checker = CheckerAPI(ledger=ledger, verifier_id="validator",
+                             token=token, shadow_mode=True)
+        checker.run()  # Measures but writes nothing to commitments
+        # Then: attestor report   (reads shadow_log)
+
+    Human review queue:
+        queue = HumanCheckerQueue(ledger)
+        checker = CheckerAPI(ledger=ledger, verifier_id="validator",
+                             token=token, queue=queue)
+        checker.run()  # Routes requires_human_review claims to queue
     """
 
     def __init__(self, ledger: LedgerAdapter, verifier_id: str, token: str,
-                 check_adapters=None, notifier=None):
+                 check_adapters=None, notifier=None,
+                 shadow_mode: bool = False, queue=None):
         self._assert_token(token)
         self.ledger = ledger
         self.verifier_id = verifier_id
         self.check_adapters = check_adapters or {}
         self.notifier = notifier
+        self.shadow_mode = shadow_mode
+        self.queue = queue
+
+        if shadow_mode:
+            from .shadow import ShadowLogger
+            self._shadow = ShadowLogger(ledger)
+        else:
+            self._shadow = None
 
     def _assert_token(self, token: str):
         """
@@ -87,11 +112,26 @@ class CheckerAPI:
         Main validator loop. Picks up commitments with pending evidence,
         re-measures each claim independently, and closes or fails them.
 
-        Returns a summary: {passed: [...], failed: [...], skipped: [...]}
+        Shadow mode: records results to shadow_log without touching commitments.
+        Human review: routes requires_human_review claims to the queue.
+
+        Returns a summary:
+            {
+                passed: [...commitment_ids],
+                failed: [...commitment_ids],
+                skipped: [...commitment_ids],
+                pending_human_review: [...review_item_ids],
+                shadow_mode: True   (only present when shadow_mode=True)
+            }
         """
         import json
         pending = self.ledger.list(status="in_progress")
-        summary = {"passed": [], "failed": [], "skipped": []}
+        summary = {
+            "passed": [],
+            "failed": [],
+            "skipped": [],
+            "pending_human_review": [],
+        }
 
         for commitment in pending:
             raw = getattr(commitment, 'metadata', {}) or {}
@@ -104,21 +144,63 @@ class CheckerAPI:
                 claims_data = json.loads(pending_evidence)
                 claims = [self._deserialize_claim(c) for c in claims_data]
             except Exception as e:
-                self.reject(commitment.id, f"Could not parse evidence claims: {e}")
-                summary["failed"].append(commitment.id)
+                if not self.shadow_mode:
+                    self.reject(commitment.id, f"Could not parse evidence claims: {e}")
+                    summary["failed"].append(commitment.id)
+                else:
+                    summary["skipped"].append(commitment.id)
                 continue
 
-            results = [self._measure(claim) for claim in claims]
+            # Partition: human review vs mechanical
+            human_claims = [c for c in claims if c.requires_human_review]
+            mechanical_claims = [c for c in claims if not c.requires_human_review]
+
+            # Run all mechanical checks
+            results = [self._measure(claim) for claim in mechanical_claims]
             failures = [r for r in results if not r.passed]
 
-            if failures:
-                fail_msg = format_fail(failures)
-                self.reject(commitment.id, fail_msg)
-                summary["failed"].append(commitment.id)
+            if self.shadow_mode and self._shadow:
+                # Shadow mode — log everything, touch nothing
+                for r in results:
+                    self._shadow.log(
+                        commitment_id=commitment.id,
+                        claim=r.claim,
+                        result=r,
+                        would_block=not r.passed,
+                    )
+                summary["skipped"].append(commitment.id)
+
             else:
-                measured = "; ".join(f"{r.claim.description}: {r.measured}" for r in results)
-                self.verify(commitment.id, f"VERIFIED — {measured}")
-                summary["passed"].append(commitment.id)
+                # Enforcement mode — enqueue human reviews, fail or complete
+                queued_ids = []
+                if human_claims and self.queue:
+                    for hc in human_claims:
+                        item = self.queue.enqueue(
+                            commitment_id=commitment.id,
+                            claim_description=hc.description,
+                            agent_output=hc.agent_output,
+                        )
+                        queued_ids.append(item.id)
+                summary["pending_human_review"].extend(queued_ids)
+
+                if failures:
+                    # Mechanical check failed — reject immediately
+                    fail_msg = format_fail(failures)
+                    self.reject(commitment.id, fail_msg)
+                    summary["failed"].append(commitment.id)
+                elif queued_ids:
+                    # Human reviews pending — do not complete, leave in_progress
+                    summary["skipped"].append(commitment.id)
+                else:
+                    # All checks passed, no human reviews — complete
+                    measured = "; ".join(
+                        f"{r.claim.description}: {r.measured}" for r in results
+                    ) or "all claims verified"
+                    self.verify(commitment.id, f"VERIFIED — {measured}")
+                    summary["passed"].append(commitment.id)
+
+        if self.shadow_mode:
+            summary["shadow_mode"] = True
 
         return summary
 
@@ -128,19 +210,23 @@ class CheckerAPI:
         if adapter:
             return adapter.check(claim)
         # Fall back to built-in checks
-        from ..adapters.checks import file_check, http_check, db_check, command_check
+        from ..adapters.checks import file_check, http_check, db_check, command_check, git_check
         dispatch = {
-            "file_exists": file_check.check,
-            "http_status": http_check.check,
-            "row_count": db_check.check,
+            "file_exists":  file_check.check,
+            "http_status":  http_check.check,
+            "row_count":    db_check.check,
             "command_exit": command_check.check,
+            "git_commit":   git_check.check,
         }
         fn = dispatch.get(claim.kind)
         if fn:
             return fn(claim)
-        return EvidenceResult(claim=claim, passed=False,
-                              measured="no adapter", expected="check adapter",
-                              detail=f"No check adapter for kind '{claim.kind}'")
+        return EvidenceResult(
+            claim=claim, passed=False,
+            measured="no adapter",
+            expected="check adapter",
+            detail=f"No check adapter for kind '{claim.kind}'",
+        )
 
     def _deserialize_claim(self, data: dict) -> EvidenceClaim:
         return EvidenceClaim(**{k: v for k, v in data.items()

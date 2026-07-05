@@ -61,12 +61,14 @@ del _os, _repo_root
 
 # ─── Public API ───────────────────────────────────────────────────────────────
 
-__version__ = "0.1.0"
+__version__ = "0.6.0"
 
 from attestor.core.maker import MakerAPI
 from attestor.core.checker import CheckerAPI, SoDViolation
 from attestor.core.watchdog import Watchdog
 from attestor.core.evidence import EvidenceClaim, EvidenceResult, EvidenceKind
+from attestor.core.queue import HumanCheckerQueue, HumanReviewItem
+from attestor.core.shadow import ShadowLogger
 from attestor.adapters.store.sqlite import SQLiteLedger
 
 __all__ = [
@@ -79,6 +81,11 @@ __all__ = [
     "EvidenceClaim",
     "EvidenceResult",
     "EvidenceKind",
+    # Human review queue
+    "HumanCheckerQueue",
+    "HumanReviewItem",
+    # Shadow mode
+    "ShadowLogger",
     # Reference store
     "SQLiteLedger",
     # Metadata
