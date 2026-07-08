@@ -4,7 +4,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "attestor"
-version = "0.1.0"
+version = "0.6.0"
 description = "Accountability and verification layer for AI agent fleets — so that done means proven, not claimed."
 readme = "README.md"
 license = {text = "Apache-2.0"}
